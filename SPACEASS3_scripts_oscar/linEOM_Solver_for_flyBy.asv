@@ -1,0 +1,179 @@
+% AERO2705 Assignment 3 Linearlised Equations of relative motion in orbit
+% Calculator | Author: Oscar Ansted
+clear;
+clc;
+clf;
+%% Global Parameters
+mu = 3.986004418e+14; % standard gravitational parameter for Earth (m^3/s^2)
+Re = 6378e+3; % radius of Earth (m)
+deg = pi/180; % converts degrees to radians
+longSyd = 152; % East longitude of Sydney (deg)
+
+%% Target vehicle input parameters - geostationary orbit in this case
+rp = 4.216414010012395e+07; % perigee radius of target vehicle, A (m)
+e = 0.0; % target eccentricity
+i = 0*deg; % target inclination (rad)
+Omega = 0*deg; % target ra of asc node (rad)
+omega = 1*longSyd*deg; % target arg of perigee (rad)
+theta = 0*deg; % target true anomaly (rad)
+
+% Calculate the additional orbital elements of the target
+ra = rp*(1 + e)/(1 - e); % radius of apogee of target (m)
+a = (ra + rp)/2; % semi-major axis of target (m)
+T = sqrt((4*pi^2/mu)*a^3); % period of target orbit (s)
+n = 2*pi/T; % mean motion of target orbit (rad/s)
+h = sqrt(2*mu*rp*ra/(ra + rp)); % specific angular momentum of target (m^2/s)
+
+% Compile the COE vector
+coe = [h e Omega i omega theta]; 
+
+%% Chaser vehicle input parameters & state vectors
+dr_0 = [1000, 0, 0]; % initial position vector in LVLH (m)
+dv_0 = [0, -2*n*dr_0(1), 0]; % initial velocity vector in LVLH (m/s) [-2*n*dr_0(1)]
+dv_0_inclined = [0, -2*n*dr_0(1), -2*n*dr_0(1)]; % initial velocity vector in LVLH (m/s) [-2*n*dr_0(1)]
+% Calculate the target's initial state vectors using the COE's
+[R0, V0] = coe2stateVecs(coe); % extract the state vectors of the target 
+
+% Calculate the initial state vectors in absolute motion (GCEF) for the
+% chaser. Save these variables as we will propagate the orbits in GCEF
+% later
+[rB_0, vB_0] = LVLH_to_gcef(coe, dr_0', dv_0');
+
+coeB = rv_to_coe(rB_0, vB_0);
+
+% Calculate for the inclined plane
+[rB_0_inc, vB_0_inc] = LVLH_to_gcef(coe, dr_0', dv_0_inclined');
+coeB_inclined = rv_to_coe(rB_0_inc, vB_0_inc);
+
+% Calculate for the plane change, 2x the inclination of this orbit
+delta = 2*coeB_inclined(4);
+disp(delta/2/deg);
+% Calculate the plane change delta-v required output coeB = [a, e, h, i, theta, Omega, omega]
+aB = coeB(1);
+eB = coeB(2);
+hB = coeB(3);
+r_aB = aB*(1 + eB);
+
+vB_1 = hB/r_aB;
+
+aB2 = coeB_inclined(1);
+eB2 = coeB_inclined(2);
+hB2 = coeB_inclined(3);
+r_aB2 = aB2*(1 + eB2);
+
+vB_2 = hB2/r_aB2; 
+
+delta_planechange = commonApsePlaneChange(vB_1, vB_2, delta);
+ 
+
+fprintf('\nThe required chaser orbit:\n');
+fprintf('Semi-major axis = %f km\n', coeB(1)*10^-3);
+fprintf('Eccentricity = %f \n', coeB(2));
+fprintf('Specific angular momentum = %f km^2/s\n', coeB(3)*10^-6);
+fprintf('Inclination = %f deg\n', coeB(4)/deg);
+fprintf('True anomaly = %f deg\n', coeB(5)/deg);
+fprintf('RA of ascending node = %f deg\n', coeB(6)/deg);
+fprintf('Argument of perigee = %f deg\n', coeB(7)/deg);
+%% Numerical integration using Runge-Kutta method
+% Construct the timespan vector
+t0 = 0; % initial time (s)
+tf = 5*T; % final time (s)
+tspan = [t0, tf]; % timespan (s)
+
+f0_B = [dr_0 dv_0]'; % initial state vector for numerical integration
+
+% Apply the ODE45 solver
+options = odeset('RelTol', 1e-10, 'AbsTol', 1e-10);
+[t, f] = ode45(@(t, f)linearRelMotionRates(t, f, R0, V0), tspan, f0_B, options); 
+
+% Obtain the relative velocity vector for motion blur calculations
+VREL = f(:, 4:6); % vector of all velocities at time throughout the motion
+vrel = zeros(length(VREL), 1); % vector of the norm velocity at each time
+for k = 1:length(VREL)
+    vrel(k) = norm(VREL(k, :));
+end
+
+
+%% Plot the output 
+figure(1) % Figure 1, the position of the chaser relative to the target
+km = 1e-3; % metres to km 
+plot3(f(:, 2)*km, f(:, 1)*km, f(:, 3)*km, 'b');
+text(f(1, 2)*km, f(1, 1)*km, f(1, 3)*km, 'x Start');
+xlabel('y_{LVLH} (km)');
+ylabel('x_{LVLH} (km)');
+zlabel('z_{LVLH} (km)');
+
+hold on
+% Plot the coordinate axes of the LVLH frame
+XX = 1.3*max(f(:,1)*km); % (km)
+YY = 1.3*max(f(:, 2)*km); % (km)
+quiver3(0, 0, 0, 0, XX, 0, 'Color', 'k');
+quiver3(0, 0, 0, YY, 0, 0, 'Color', 'k');
+text(YY, 0, 0, 'Y');
+text(0, XX, 0, 'X');
+
+if sum(f(:, 3)) == 0 
+    ZZ = 0; % (km)
+else
+    ZZ = 1.3*max(f(:, 3)*km); % (km)
+    quiver3(0, 0, 0, 0, 0, ZZ, 'Color', 'k');
+    text(0, 0, ZZ, 'Z');
+end
+axis equal
+grid on 
+grid minor
+
+% figure(2) % figure 2, the velocity of the chaser relative to the target along the LVLH axes
+% plot3(f(:, 5)*km, f(:, 4)*km, f(:, 6)*km, 'b');
+% text(f(1, 5)*km, f(1, 4)*km, f(1, 6)*km, 'x Start');
+% xlabel('v_y (km/s)');
+% ylabel('v_x (km/s)');
+% zlabel('v_{z} (km/s)');
+
+grid on 
+grid minor 
+
+figure(3) % figure 3, the speed of the chaser relative to the target over time
+plot(t, vrel, 'b');
+xlabel('time (s)');
+ylabel('v_{rel} (m/s)');
+
+grid on 
+grid minor
+
+%% Propagate the orbits in the ODE solver (no J2, assume stationkeeping)
+f0_A = [R0, V0];
+f0_B = [rB_0, vB_0]; % compile the initial state vector for chaser
+day = 60*60*24; % one day (s)
+tf = 1*day;
+tspan = [0, tf];
+
+options = odeset('RelTol', 1e-10, 'AbsTol', 1e-10);
+[tA, fA] = ode45(@(t, f)twoBody(t, f), tspan, f0_A, options);
+[tB, fB] = ode45(@(t, f)twoBody(t, f), tspan, f0_B, options);
+
+% Plot the desired orbit
+figure(4)
+% Plot the earth
+earth_sphere('km');
+hold on
+km = 10^-3; % converts metres to kilometres
+plot3(fA(:, 1)*km, fA(:, 2)*km, fA(:, 3)*km, '--b');
+hold on
+plot3(fB(:, 1)*km, fB(:, 2)*km, fB(:, 3)*km, 'r');
+hold on
+text(fA(1, 1)*km, fA(1, 2)*km, fA(1, 3)*km, 'o Start');
+hold on
+quiver3(0, 0, 0, 40000, 0, 0, 'k');
+
+grid on
+axis equal
+
+
+
+
+%% Calculate the delta-v's required for fly-by manoeuvres 
+
+
+
+
